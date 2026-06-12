@@ -78,6 +78,16 @@ public final class RaftNode {
     private final Map<Integer, Long> nextIndex = new HashMap<>();
     private final Map<Integer, Long> matchIndex = new HashMap<>();
 
+    /**
+     * Flow control: at most one unacknowledged AppendEntries per follower.
+     * New proposals between sends just accumulate in the log; each ack (or
+     * heartbeat, which force-sends and doubles as the retransmit timer for
+     * dropped messages) carries everything accumulated since — group commit.
+     * Without this, every proposal re-broadcasts the whole uncommitted window
+     * and the leader's work per op grows with the number in flight.
+     */
+    private final Map<Integer, Boolean> appendInFlight = new HashMap<>();
+
     public RaftNode(Config config, Storage storage, StateMachine stateMachine, Random random) {
         this.config = config;
         this.storage = storage;
@@ -101,7 +111,7 @@ public final class RaftNode {
             heartbeatElapsed++;
             if (heartbeatElapsed >= config.heartbeatTicks()) {
                 heartbeatElapsed = 0;
-                broadcastAppends(out);
+                broadcastAppends(out, true);
             }
         } else {
             electionElapsed++;
@@ -142,7 +152,7 @@ public final class RaftNode {
         log.append(List.of(new LogEntry(currentTerm, command)));
         List<Message> out = new ArrayList<>();
         maybeAdvanceCommit(); // a single-node cluster commits instantly
-        broadcastAppends(out);
+        broadcastAppends(out, false);
         return new ProposeResult(log.lastIndex(), currentTerm, config.id(), out);
     }
 
@@ -211,13 +221,14 @@ public final class RaftNode {
         for (int peer : config.peers()) {
             nextIndex.put(peer, log.lastIndex() + 1);
             matchIndex.put(peer, 0L);
+            appendInFlight.put(peer, false);
         }
         // Commit a no-op of our own term right away: until an entry of the
         // current term is committed, nothing from prior terms may be declared
         // committed either (§5.4.2 / figure 8).
         log.append(List.of(new LogEntry(currentTerm, LogEntry.NOOP)));
         maybeAdvanceCommit();
-        broadcastAppends(out);
+        broadcastAppends(out, true);
     }
 
     private void becomeFollower(long term, Integer leader) {
@@ -242,10 +253,18 @@ public final class RaftNode {
     // Log replication (§5.3)
     // ------------------------------------------------------------------
 
-    private void broadcastAppends(List<Message> out) {
+    /** Heartbeats force a send; proposal-triggered sends respect single-flight. */
+    private void broadcastAppends(List<Message> out, boolean force) {
         for (int peer : config.peers()) {
-            out.add(buildAppend(peer));
+            if (force || !appendInFlight.get(peer)) {
+                sendAppend(peer, out);
+            }
         }
+    }
+
+    private void sendAppend(int peer, List<Message> out) {
+        out.add(buildAppend(peer));
+        appendInFlight.put(peer, true);
     }
 
     private AppendEntries buildAppend(int peer) {
@@ -306,6 +325,7 @@ public final class RaftNode {
         if (role != Role.LEADER || m.term() != currentTerm) {
             return;
         }
+        appendInFlight.put(m.from(), false);
         if (m.success()) {
             // max() because replies can arrive out of order; matchIndex never regresses.
             long match = Math.max(matchIndex.get(m.from()), m.matchIndex());
@@ -313,13 +333,13 @@ public final class RaftNode {
             nextIndex.put(m.from(), match + 1);
             maybeAdvanceCommit();
             if (log.lastIndex() >= nextIndex.get(m.from())) {
-                out.add(buildAppend(m.from())); // keep feeding a catching-up follower
+                sendAppend(m.from(), out); // next batch: everything accumulated since
             }
         } else {
             // Back up past the conflict and retry immediately.
             long next = Math.max(1, Math.min(m.conflictIndex(), nextIndex.get(m.from()) - 1));
             nextIndex.put(m.from(), next);
-            out.add(buildAppend(m.from()));
+            sendAppend(m.from(), out);
         }
     }
 
