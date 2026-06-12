@@ -59,6 +59,9 @@ public final class Main {
                 body.put("type", "status");
                 System.out.println(Client.request(args[1], body));
             }
+            case "bench" -> Bench.run(args[1],
+                    args.length > 2 ? Integer.parseInt(args[2]) : 2000,
+                    args.length > 3 ? Integer.parseInt(args[3]) : 32);
             default -> usage();
         }
     }
@@ -81,7 +84,8 @@ public final class Main {
                   set <host:port> <key> <value>  replicate a write
                   get <host:port> <key>          read from a node's state machine
                   del <host:port> <key>          replicate a delete
-                  status <host:port>             role/term/commitIndex of a node""");
+                  status <host:port>             role/term/commitIndex of a node
+                  bench <host:port> [ops] [workers]  load test (default 2000 ops, 32 workers)""");
     }
 
     private Main() {}

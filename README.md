@@ -22,6 +22,7 @@ java -jar target/toy-raft-0.1.0.jar node 3 1=localhost:5001,2=localhost:5002,3=l
 java -jar target/toy-raft-0.1.0.jar set localhost:5002 color teal   # any node; redirects to leader
 java -jar target/toy-raft-0.1.0.jar get localhost:5003 color
 java -jar target/toy-raft-0.1.0.jar status localhost:5001
+java -jar target/toy-raft-0.1.0.jar bench localhost:5001 50000 128  # load test
 ```
 
 ## Design
@@ -104,6 +105,38 @@ purpose, twice:
    batch. Random testing is blind exactly there, so a deterministic unit test
    (`leaderMustNotCommitPriorTermEntriesByCountingReplicas`) drives the
    schedule by hand and kills the mutation.
+
+## Load testing
+
+Two layers, matching the architecture:
+
+- **`ThroughputTest` (simulation)** — 5,000 proposals pipelined at 5/tick with
+  no waiting for commits, asserting ordering at volume and that replication
+  lag stays *bounded* (the whole run takes barely longer than the load
+  itself). Deterministic, runs with the rest of the suite.
+- **`bench` (live cluster)** — N workers over persistent connections firing
+  unique writes, where an ack means committed-and-applied. Follows leader
+  redirects, reports throughput and latency percentiles, then verifies a
+  sample of keys.
+
+Measured on a 3-node local cluster (one machine, in-memory storage):
+
+| configuration | throughput | p50 | p99 |
+|---|---|---|---|
+| 1 worker (unloaded RTT) | ~1,500 ops/s | 0.4 ms | 6 ms |
+| 128 workers, 50k ops | ~25,000 ops/s | 3.9 ms | 17 ms |
+
+The first bench run told a story worth keeping: the naive transport
+(connection per message) plus per-proposal broadcasting managed ~1,000 ops/s
+with p50 = 54 ms — and adding workers made it *slower* than one worker alone.
+Single-worker latency of 0.4 ms pinpointed queueing, not replication, as the
+problem: every proposal re-broadcast the entire uncommitted window to every
+follower, so leader work per op grew with pipeline depth. The fix is what real
+implementations do — **single-flight appends**: at most one unacknowledged
+AppendEntries per follower, proposals accumulate in the log, and each ack
+carries everything accumulated since (group commit), with heartbeats doubling
+as the retransmit timer. Send scheduling only, no semantic change; the chaos
+suite passes untouched. Result: 25× throughput at 1/13th the p50.
 
 ## Deliberate simplifications
 
