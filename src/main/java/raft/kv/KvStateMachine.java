@@ -52,6 +52,11 @@ public final class KvStateMachine implements StateMachine {
         return List.copyOf(appliedCommands);
     }
 
+    /** Cheaper than {@code appliedCommands().size()} when polled in a loop. */
+    public int appliedCount() {
+        return appliedCommands.size();
+    }
+
     public long lastAppliedIndex() {
         return lastAppliedIndex;
     }
