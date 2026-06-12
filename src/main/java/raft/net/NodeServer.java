@@ -51,6 +51,7 @@ public final class NodeServer {
 
     private final int id;
     private final Map<Integer, InetSocketAddress> peers; // includes self
+    private final Map<Integer, PeerLink> links;
     private final RaftNode node;
     private final KvStateMachine kv = new KvStateMachine();
 
@@ -65,6 +66,8 @@ public final class NodeServer {
         this.id = id;
         this.peers = peers;
         List<Integer> others = peers.keySet().stream().filter(p -> p != id).toList();
+        this.links = others.stream().collect(
+                java.util.stream.Collectors.toMap(p -> p, p -> new PeerLink(peers.get(p))));
         StateMachine stateMachine = (index, term, command) -> {
             kv.apply(index, term, command);
             Pending p = pending.remove(index);
@@ -89,25 +92,29 @@ public final class NodeServer {
             System.out.println("node " + id + " listening on " + peers.get(id));
             while (true) {
                 Socket socket = server.accept();
+                socket.setTcpNoDelay(true); // small latency-sensitive messages; Nagle hurts
                 io.submit(() -> handleConnection(socket));
             }
         }
     }
 
     private void handleConnection(Socket socket) {
+        // Connections are persistent: peers stream messages, clients pipeline
+        // request/response pairs, one JSON object per line, until EOF.
         try (socket;
              BufferedReader in = new BufferedReader(
                      new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
              PrintWriter out = new PrintWriter(
                      new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true)) {
-            String line = in.readLine();
-            if (line == null) return;
-            JsonNode request = JSON.readTree(line);
-            if (Wire.isPeerMessage(request)) {
-                Message m = Wire.decode(request);
-                raftThread.submit(() -> send(node.step(m)));
-            } else {
-                out.println(handleClient(request));
+            String line;
+            while ((line = in.readLine()) != null) {
+                JsonNode request = JSON.readTree(line);
+                if (Wire.isPeerMessage(request)) {
+                    Message m = Wire.decode(request);
+                    raftThread.submit(() -> send(node.step(m)));
+                } else {
+                    out.println(handleClient(request));
+                }
             }
         } catch (Exception e) {
             // A dropped connection is just a lossy network; Raft already copes.
@@ -197,19 +204,54 @@ public final class NodeServer {
         return reply.toString();
     }
 
-    /** Fire-and-forget delivery; an unreachable peer is just a dropped message. */
+    /** Fire-and-forget delivery over a persistent link per peer. */
     private void send(List<Message> messages) {
         for (Message m : messages) {
-            io.submit(() -> {
-                try (Socket socket = new Socket()) {
-                    socket.connect(peers.get(m.to()), 200);
-                    PrintWriter out = new PrintWriter(
-                            new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
-                    out.println(Wire.encode(m));
-                } catch (IOException dropped) {
-                    // peer down or partitioned; retries come from Raft itself
+            io.submit(() -> links.get(m.to()).send(Wire.encode(m)));
+        }
+    }
+
+    /**
+     * One long-lived outbound socket per peer, reconnected lazily on failure.
+     * Send semantics stay fire-and-forget — a write that lands in a dying
+     * socket's buffer is just a dropped message, and Raft's own retries
+     * (heartbeats, append backtracking) are the recovery mechanism.
+     */
+    private static final class PeerLink {
+        private final InetSocketAddress address;
+        private Socket socket;
+        private PrintWriter out;
+
+        PeerLink(InetSocketAddress address) {
+            this.address = address;
+        }
+
+        synchronized void send(String line) {
+            try {
+                if (socket == null || socket.isClosed()) {
+                    socket = new Socket();
+                    socket.setTcpNoDelay(true);
+                    socket.connect(address, 200);
+                    out = new PrintWriter(new OutputStreamWriter(
+                            socket.getOutputStream(), StandardCharsets.UTF_8), false);
                 }
-            });
+                out.println(line);
+                out.flush();
+                if (out.checkError()) { // PrintWriter swallows IOExceptions
+                    closeQuietly();
+                }
+            } catch (IOException dropped) {
+                closeQuietly(); // peer down or partitioned; retry on next send
+            }
+        }
+
+        private void closeQuietly() {
+            try {
+                if (socket != null) socket.close();
+            } catch (IOException ignored) {
+            }
+            socket = null;
+            out = null;
         }
     }
 }

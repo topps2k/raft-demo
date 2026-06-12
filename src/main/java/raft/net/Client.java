@@ -49,6 +49,7 @@ final class Client {
     private static JsonNode exchange(String address, ObjectNode body) throws IOException {
         String[] hostPort = address.split(":");
         try (Socket socket = new Socket()) {
+            socket.setTcpNoDelay(true);
             socket.connect(new InetSocketAddress(hostPort[0], Integer.parseInt(hostPort[1])), 1000);
             socket.setSoTimeout(10_000);
             PrintWriter out = new PrintWriter(
