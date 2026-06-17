@@ -96,9 +96,9 @@ On top of that:
 A green suite proves nothing if it can't fail, so the algorithm was broken on
 purpose, twice:
 
-1. Removing the §5.4.1 vote restriction → 6 of 10 chaos seeds fail with State
+1. Removing the vote restriction → 6 of 10 chaos seeds fail with State
    Machine Safety violations, plus a unit test.
-2. Removing the §5.4.2 commit restriction (the figure-8 bug) → **the whole
+2. Removing the commit restriction (the figure-8 bug) → **the whole
    suite still passed.** Honest result: the leader no-op makes that schedule
    essentially unreachable by random exploration, because majority confirmation
    of an old entry almost always confirms the new leader's no-op in the same
