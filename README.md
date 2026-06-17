@@ -126,18 +126,6 @@ Measured on a 3-node local cluster (one machine, in-memory storage):
 | 1 worker (unloaded RTT) | ~1,500 ops/s | 0.4 ms | 6 ms |
 | 128 workers, 50k ops | ~25,000 ops/s | 3.9 ms | 17 ms |
 
-The first bench run told a story worth keeping: the naive transport
-(connection per message) plus per-proposal broadcasting managed ~1,000 ops/s
-with p50 = 54 ms — and adding workers made it *slower* than one worker alone.
-Single-worker latency of 0.4 ms pinpointed queueing, not replication, as the
-problem: every proposal re-broadcast the entire uncommitted window to every
-follower, so leader work per op grew with pipeline depth. The fix is what real
-implementations do — **single-flight appends**: at most one unacknowledged
-AppendEntries per follower, proposals accumulate in the log, and each ack
-carries everything accumulated since (group commit), with heartbeats doubling
-as the retransmit timer. Send scheduling only, no semantic change; the chaos
-suite passes untouched. Result: 25× throughput at 1/13th the p50.
-
 ## Deliberate simplifications
 
 Chosen to keep the core readable; each is the standard next step in a real system:
