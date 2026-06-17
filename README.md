@@ -147,7 +147,7 @@ Chosen to keep the core readable; each is the standard next step in a real syste
 - **No membership changes** — the peer set is fixed at startup (joint
   consensus / single-server changes would go here).
 - **Reads are not linearizable** — `get` serves the local state machine, so a
-  deposed leader can briefly return stale data. The fix is ReadIndex (§8):
+  deposed leader can briefly return stale data. The fix is ReadIndex:
   confirm leadership with a heartbeat round before serving.
 - **No pre-vote** — a partitioned node's term climbs while isolated and
   forces one needless re-election on rejoin (visible in
