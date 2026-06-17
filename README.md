@@ -55,10 +55,10 @@ plumbing; nothing about consensus lives there.
   and forgot could elect two leaders in one term. The simulation "crashes"
   nodes by discarding the `RaftNode` and rebooting from `Storage` — exactly
   what disk gives you.
-- **Election restriction (§5.4.1).** Votes only go to candidates whose log is
+- **Election restriction** Votes only go to candidates whose log is
   at least as up-to-date; this is the rule that lets Raft never ship entries
   *to* a leader.
-- **Commit restriction (§5.4.2, figure 8).** A leader only counts replicas for
+- **Commit restriction** A leader only counts replicas for
   entries of its *own* term; prior-term entries commit transitively. Each new
   leader appends a no-op of its term so that happens promptly.
 - **Conflict-index hints.** Rejected `AppendEntries` return the first index of
